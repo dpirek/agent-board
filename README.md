@@ -47,9 +47,35 @@ The stdio server implements MCP initialization, ping, `tools/list`, and
 `create_record`, `update_record`, and `delete_record`. Protocol messages are
 newline-delimited JSON-RPC; stdout is reserved exclusively for those messages.
 
+### Streamable HTTP
+
+Start the dependency-free Streamable HTTP server:
+
+```sh
+node bin/agent-board.js mcp-http
+```
+
+The MCP endpoint defaults to `http://127.0.0.1:3000/mcp`. Override it with
+`--host`, `--port`, and `--path`, or the `AGENT_BOARD_HOST`,
+`AGENT_BOARD_PORT`, and `AGENT_BOARD_PATH` environment variables. For example:
+
+```sh
+node bin/agent-board.js mcp-http --port 8080 --path /mcp
+```
+
+The transport returns JSON responses to POST requests and does not expose a
+standalone SSE stream, so GET requests return `405 Method Not Allowed`. It is
+stateless and compatible with MCP protocol versions 2025-11-25, 2025-06-18,
+2025-03-26, and 2024-11-05.
+
+The server binds to localhost by default and rejects cross-origin browser
+requests. Add comma-separated trusted origins with `--allowed-origin` or
+`AGENT_BOARD_ALLOWED_ORIGINS`. Set `AGENT_BOARD_TOKEN` to require clients to
+send `Authorization: Bearer <token>`. Use TLS and authentication when exposing
+the endpoint beyond localhost.
+
 ## Test
 
 ```sh
 npm test
 ```
-

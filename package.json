@@ -12,6 +12,7 @@
   "scripts": {
     "start": "node bin/agent-board.js",
     "mcp": "node bin/agent-board.js mcp",
+    "mcp:http": "node bin/agent-board.js mcp-http",
     "test": "node --test"
   },
   "repository": {
