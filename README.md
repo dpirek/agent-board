@@ -1,32 +1,49 @@
 # Agent Board
 
-A dependency-free Node.js CLI and MCP server for the entities in
-[`db/schema.sql`](db/schema.sql). Records are persisted in a local JSON file;
-foreign keys, required fields, UUIDs, project key length, and the unique
-organization/project-key pair are validated before writes.
+Agent Board is a SQLite-backed Jira-like project-management service with a
+command-line interface and MCP transports for stdio and Streamable HTTP. The
+full 35-table domain in [`db/schema.sql`](db/schema.sql)—projects, workflows,
+issues, boards, sprints, releases, custom fields, audit events, and agent
+runs—is created automatically in SQLite.
 
-Requires Node.js 18 or newer. No install step is required.
+It requires Node.js 22.5 or newer and uses the built-in `node:sqlite` module,
+so there are no runtime dependencies to install.
+
+## Storage
+
+The database defaults to `db/agent-board.sqlite`. Select another
+database with `--db <path>` or `AGENT_BOARD_DB`:
+
+```sh
+node bin/agent-board.js --db /absolute/path/board.sqlite list projects
+```
+
+On the first default startup, an existing `.agent-board/data.json` is imported
+transactionally into `db/agent-board.sqlite` and renamed to
+`data.json.migrated`. SQLite is the only active storage format after migration.
+`--data` and `AGENT_BOARD_DATA` remain aliases for a SQLite database path so
+older launch configurations do not fail.
 
 ## CLI
 
+Every table can be managed with generic commands:
+
 ```sh
 node bin/agent-board.js create organizations --name "Acme"
-node bin/agent-board.js list organizations
 node bin/agent-board.js create projects \
-  --organization-id <organization-uuid> --key WEB --name "Website"
+  --organization-id <organization-uuid> --project-key WEB --name "Website"
+node bin/agent-board.js list projects --organization-id <organization-uuid>
+node bin/agent-board.js get projects <project-uuid>
+node bin/agent-board.js update projects <project-uuid> --description "Public site"
+node bin/agent-board.js delete projects <project-uuid>
 ```
 
-Commands print JSON. Use `--data <path>` before or after the command, or set
-`AGENT_BOARD_DATA`, to select another data file. Run the built-in help for all
-commands:
-
-```sh
-node bin/agent-board.js --help
-```
+Values accept strings, `null`, `true`, `false`, or structured JSON prefixed
+with `json:`. Run `node bin/agent-board.js --help` for complete usage.
 
 ## MCP server
 
-Configure an MCP client to launch:
+Configure an MCP client to launch the stdio transport:
 
 ```json
 {
@@ -35,44 +52,44 @@ Configure an MCP client to launch:
       "command": "node",
       "args": ["/absolute/path/to/agent-board/bin/agent-board.js", "mcp"],
       "env": {
-        "AGENT_BOARD_DATA": "/absolute/path/to/agent-board-data.json"
+        "AGENT_BOARD_DB": "/absolute/path/to/agent-board.sqlite"
       }
     }
   }
 }
 ```
 
-The stdio server implements MCP initialization, ping, `tools/list`, and
-`tools/call`. It exposes `get_schema`, `list_records`, `get_record`,
-`create_record`, `update_record`, and `delete_record`. Protocol messages are
-newline-delimited JSON-RPC; stdout is reserved exclusively for those messages.
+The server exposes project-management tools designed for agents:
+
+- `setup_workspace` creates or idempotently configures an organization with
+  default issue types, priorities, statuses, and workflow.
+- `create_project` creates a keyed project, workflow mappings, and board.
+- `create_issue`, `get_issue`, `search_issues`, `update_issue`, and
+  `transition_issue` manage a numbered backlog with keys such as `WEB-123`.
+- `add_comment` records issue discussion and audit history.
+- `create_sprint`, `add_issues_to_sprint`, `start_sprint`, and `close_sprint`
+  manage Scrum planning.
+- `get_board` returns columns, mapped statuses, sprints, and issues.
+- `get_schema`, `list_records`, `get_record`, `create_record`, `update_record`,
+  and `delete_record` provide advanced access to every schema table.
 
 ### Streamable HTTP
 
-Start the dependency-free Streamable HTTP server:
+Start the HTTP transport:
 
 ```sh
 node bin/agent-board.js mcp-http
 ```
 
-The MCP endpoint defaults to `http://127.0.0.1:3000/mcp`. Override it with
-`--host`, `--port`, and `--path`, or the `AGENT_BOARD_HOST`,
-`AGENT_BOARD_PORT`, and `AGENT_BOARD_PATH` environment variables. For example:
+The endpoint defaults to `http://127.0.0.1:3000/mcp`. Override it with
+`--host`, `--port`, and `--path`, or `AGENT_BOARD_HOST`, `AGENT_BOARD_PORT`,
+and `AGENT_BOARD_PATH`. The stateless transport accepts MCP POST requests and
+supports protocol versions 2025-11-25, 2025-06-18, 2025-03-26, and 2024-11-05.
 
-```sh
-node bin/agent-board.js mcp-http --port 8080 --path /mcp
-```
-
-The transport returns JSON responses to POST requests and does not expose a
-standalone SSE stream, so GET requests return `405 Method Not Allowed`. It is
-stateless and compatible with MCP protocol versions 2025-11-25, 2025-06-18,
-2025-03-26, and 2024-11-05.
-
-The server binds to localhost by default and rejects cross-origin browser
-requests. Add comma-separated trusted origins with `--allowed-origin` or
-`AGENT_BOARD_ALLOWED_ORIGINS`. Set `AGENT_BOARD_TOKEN` to require clients to
-send `Authorization: Bearer <token>`. Use TLS and authentication when exposing
-the endpoint beyond localhost.
+The server binds to localhost and rejects cross-origin browser requests by
+default. Add trusted origins with `--allowed-origin` or
+`AGENT_BOARD_ALLOWED_ORIGINS`. Set `AGENT_BOARD_TOKEN` to require a bearer
+token. Use TLS when exposing the endpoint beyond localhost.
 
 ## Test
 

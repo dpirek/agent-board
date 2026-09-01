@@ -5,17 +5,19 @@ const os = require('node:os');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const test = require('node:test');
-const { JsonStore } = require('../lib/store');
+const { SqliteStore } = require('../lib/store');
 const { BoardService } = require('../lib/service');
 const { PROTOCOL_VERSION } = require('../lib/mcp');
 const { startMcpHttpServer } = require('../lib/mcp-http');
 
 async function fixture(t, options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-board-http-'));
-  const service = new BoardService(new JsonStore(path.join(directory, 'data.json')));
+  const store = new SqliteStore(path.join(directory, 'board.sqlite'));
+  const service = new BoardService(store);
   const started = await startMcpHttpServer(service, { port: 0, ...options });
   t.after(async () => {
     await new Promise((resolve) => started.server.close(resolve));
+    store.close();
     await fs.rm(directory, { recursive: true, force: true });
   });
   return started.url;

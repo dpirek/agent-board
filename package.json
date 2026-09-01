@@ -1,9 +1,9 @@
 {
   "name": "agent-board",
   "version": "1.0.0",
-  "description": "Dependency-free issue board CLI and MCP server",
+  "description": "SQLite-backed Jira-like project management CLI and MCP server",
   "engines": {
-    "node": ">=18"
+    "node": ">=22.5"
   },
   "main": "lib/service.js",
   "bin": {
