@@ -9,6 +9,19 @@ runs—is created automatically in SQLite.
 It requires Node.js 22.5 or newer and uses the built-in `node:sqlite` module,
 so there are no runtime dependencies to install.
 
+## Web UI
+
+Start the Jira-style browser interface with:
+
+```sh
+npm run web
+```
+
+Open `http://127.0.0.1:8080`. Set `PORT`, `HOST`, or `AGENT_BOARD_DB` to
+override the listener or SQLite database. The UI supports the same workspace,
+project, issue, workflow, comment, board, sprint, and generic record operations
+as the MCP server, including schema-driven access to all 35 tables.
+
 ## Storage
 
 The database defaults to `db/agent-board.sqlite`. Select another

@@ -1,2 +1,5 @@
-.agent-board/
+# Ignore SQLite database files
 db/*.sqlite*
+
+# Ignore apple system files
+.DS_Store

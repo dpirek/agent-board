@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f1f2f4">
+  <meta name="description" content="Agent Board project and issue tracking">
+  <title>Agent Board</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app/theme.css">
+  <script type="module" src="/app/main.js"></script>
+</head>
+<body>
+  <div id="app" aria-live="polite">
+    <div class="boot-screen">
+      <div class="brand-mark brand-mark--large" aria-hidden="true"><img src="/favicon.svg" alt=""></div>
+      <div class="boot-loader"><span></span><span></span><span></span></div>
+      <p>Loading your workspace…</p>
+    </div>
+  </div>
+  <div id="modal-root"></div>
+  <div id="toast-root" class="toast-stack" aria-live="assertive"></div>
+</body>
+</html>
