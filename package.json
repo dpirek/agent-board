@@ -1,0 +1,29 @@
+{
+  "name": "agent-board",
+  "version": "1.0.0",
+  "description": "Dependency-free issue board CLI and MCP server",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "lib/service.js",
+  "bin": {
+    "agent-board": "bin/agent-board.js"
+  },
+  "scripts": {
+    "start": "node bin/agent-board.js",
+    "mcp": "node bin/agent-board.js mcp",
+    "test": "node --test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dpirek/agent-board.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/dpirek/agent-board/issues"
+  },
+  "homepage": "https://github.com/dpirek/agent-board#readme"
+}
