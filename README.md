@@ -22,6 +22,12 @@ override the listener or SQLite database. The UI supports the same workspace,
 project, issue, workflow, comment, board, sprint, and generic record operations
 as the MCP server, including schema-driven access to all 35 tables.
 
+The first person to register creates the initial workspace and receives the
+`admin` role. Later registrations join the existing instance as members.
+Passwords are hashed with scrypt, and browser sessions use expiring opaque
+tokens in HTTP-only, SameSite cookies. Board JSON APIs require an authenticated
+session; the health endpoint and MCP transports remain independent.
+
 ## Storage
 
 The database defaults to `db/agent-board.sqlite`. Select another

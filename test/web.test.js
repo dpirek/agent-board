@@ -13,13 +13,14 @@ test('web UI serves SPA routes and exposes every MCP operation over JSON', async
   const { server } = createWebServer({ databaseFile });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
+  let cookie = '';
   t.after(async () => {
     await new Promise((resolve) => server.close(resolve));
     await fs.rm(directory, { recursive: true, force: true });
   });
 
   async function get(pathname) {
-    const response = await fetch(`${origin}${pathname}`);
+    const response = await fetch(`${origin}${pathname}`, { headers: cookie ? { cookie } : {} });
     const contentType = response.headers.get('content-type') || '';
     const body = contentType.includes('json') ? await response.json() : await response.text();
     assert.equal(response.status, 200, JSON.stringify(body));
@@ -29,7 +30,7 @@ test('web UI serves SPA routes and exposes every MCP operation over JSON', async
   async function tool(name, args = {}) {
     const response = await fetch(`${origin}/api/tools/${name}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
       body: JSON.stringify(args)
     });
     const body = await response.json();
@@ -40,6 +41,13 @@ test('web UI serves SPA routes and exposes every MCP operation over JSON', async
   assert.match(await get('/'), /Agent Board/);
   assert.match(await get('/projects/WEB/board'), /Agent Board/);
   assert.equal((await get('/api/health')).ok, true);
+  const registrationResponse = await fetch(`${origin}/api/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Web Admin', email: 'admin@auth.test', password: 'web-test-password', workspace_name: 'Auth Test' })
+  });
+  assert.equal(registrationResponse.status, 201);
+  cookie = registrationResponse.headers.get('set-cookie').split(';')[0];
   const availableTools = await get('/api/tools');
   assert.equal(availableTools.tools.length, 19);
 

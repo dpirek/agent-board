@@ -7,6 +7,8 @@ const { URL } = require('node:url');
 const { SqliteStore } = require('./lib/store');
 const { BoardService } = require('./lib/service');
 const { callTool, tools } = require('./lib/mcp');
+const { authApi } = require('./api/auth');
+const auth = require('./utils/auth');
 
 const PUBLIC_ROOT = path.resolve(__dirname, 'public');
 const DEFAULT_DATABASE = path.resolve(__dirname, 'db', 'agent-board.sqlite');
@@ -194,8 +196,28 @@ function createWebServer(options = {}) {
       if (pathname === '/api/health' && request.method === 'GET') {
         return sendJson(response, 200, { ok: true, database: path.basename(databaseFile) });
       }
+      if (['/api/auth', '/api/login', '/api/register', '/api/logout'].includes(pathname)) {
+        const body = request.method === 'POST' ? await readJson(request) : {};
+        const result = await authApi({
+          pathname,
+          method: request.method,
+          body,
+          request,
+          response,
+          service,
+          store
+        });
+        if (result) return sendJson(response, result.statusCode, result.body);
+      }
+      const authUser = auth.getUserFromRequest(store, request);
+      if (pathname.startsWith('/api/') && !authUser) {
+        return sendJson(response, 401, { error: 'Authentication required.' });
+      }
       if (pathname === '/api/bootstrap' && request.method === 'GET') {
-        return sendJson(response, 200, bootstrap(service, store, requestUrl.searchParams.get('organization_id')));
+        return sendJson(response, 200, {
+          ...bootstrap(service, store, requestUrl.searchParams.get('organization_id')),
+          current_user: authUser
+        });
       }
       if (pathname === '/api/tools' && request.method === 'GET') return sendJson(response, 200, { tools });
       const toolMatch = pathname.match(/^\/api\/tools\/([a-z_]+)$/);

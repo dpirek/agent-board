@@ -465,6 +465,31 @@ CREATE TABLE agent_artifacts (
 );
 
 -- =========================================================
+-- INTERNAL AUTHENTICATION (not exposed through MCP/schema tools)
+-- =========================================================
+
+CREATE TABLE _auth_accounts (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    email TEXT NOT NULL UNIQUE CHECK (email = lower(email)),
+    password_hash TEXT NOT NULL,
+    password_salt TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'member')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE _auth_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_auth_sessions_user_id ON _auth_sessions(user_id);
+CREATE INDEX idx_auth_sessions_expires_at ON _auth_sessions(expires_at);
+
+-- =========================================================
 -- HELPER FUNCTION: UPDATED_AT
 -- =========================================================
 

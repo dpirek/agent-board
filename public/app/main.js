@@ -1,3 +1,5 @@
+import './components/auth/login.js';
+
 const app = document.querySelector('#app');
 const modalRoot = document.querySelector('#modal-root');
 const toastRoot = document.querySelector('#toast-root');
@@ -13,6 +15,7 @@ const state = {
   selectedIssue: null,
   dataEntity: 'organizations',
   dataRecords: [],
+  currentUser: null,
   busy: false,
   theme: localStorage.getItem('agent-board.theme') || 'light'
 };
@@ -40,7 +43,8 @@ const ICONS = {
   edit: '<path d="m4 20 4.5-1 10-10-3.5-3.5-10 10L4 20ZM13.5 7l3.5 3.5"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3m3 0-1 14H7L6 7m4 4v6m4-6v6"/>',
   users: '<circle cx="9" cy="8" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2M16 5a3 3 0 0 1 0 6m2 3a5 5 0 0 1 3 4v2"/>',
-  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>'
+  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  logout: '<path d="M10 5H5v14h5M14 8l4 4-4 4m4-4H9"/>'
 };
 
 function icon(name, size = 18) {
@@ -118,6 +122,11 @@ async function request(url, options = {}) {
   });
   let body;
   try { body = await response.json(); } catch { body = {}; }
+  if (response.status === 401 && url !== '/api/auth') {
+    state.currentUser = null;
+    history.replaceState({}, '', '/login');
+    renderAuth();
+  }
   if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
   return body;
 }
@@ -205,7 +214,8 @@ function shell() {
         <div class="topbar__actions">
           <button class="button button--primary button--compact" type="button" data-create-issue>${icon('plus', 16)}<span>Create</span></button>
           <button class="icon-button icon-button--topbar" type="button" data-theme-toggle aria-label="Toggle theme">${icon(state.theme === 'dark' ? 'sun' : 'moon')}</button>
-          ${avatar(bootstrap.users.find((user) => user.is_active) || null, 'sm')}
+          ${avatar(state.currentUser || bootstrap.users.find((user) => user.is_active) || null, 'sm')}
+          <button class="icon-button icon-button--topbar" type="button" data-logout aria-label="Log out" title="Log out">${icon('logout')}</button>
         </div>
       </header>
       <aside class="sidebar">
@@ -730,6 +740,14 @@ document.addEventListener('click', async (event) => {
   if (event.target.closest('[data-close-modal]') && event.target.closest('button')) { closeModal(); return; }
   if (event.target.closest('[data-toggle-sidebar]')) { document.body.classList.toggle('sidebar-open'); return; }
   if (event.target.closest('[data-theme-toggle]')) { state.theme = state.theme === 'dark' ? 'light' : 'dark'; localStorage.setItem('agent-board.theme', state.theme); document.documentElement.dataset.theme = state.theme; shell(); renderRoute(); return; }
+  if (event.target.closest('[data-logout]')) {
+    try {
+      await request('/api/logout', { method: 'POST', body: '{}' });
+      state.currentUser = null; state.bootstrap = null; state.schema = null;
+      closeModal(); history.replaceState({}, '', '/login'); await init();
+    } catch (error) { toast(error.message, 'error'); }
+    return;
+  }
   if (event.target.closest('[data-create-issue]')) { openCreateIssue({ status: event.target.closest('[data-create-issue]').dataset.status }); return; }
   if (event.target.closest('[data-create-project]')) { openCreateProject(); return; }
   if (event.target.closest('[data-setup-workspace]')) { openSetupWorkspace(); return; }
@@ -834,8 +852,7 @@ document.addEventListener('submit', async (event) => {
       await perform(() => tool('update_issue', { issue: formValue(form, 'issue'), values: { title: formValue(form, 'title'), description: nullable('description'), assignee_id: nullable('assignee_id'), priority_id: nullable('priority_id'), due_date: nullable('due_date'), story_points: numeric('story_points'), remaining_estimate_minutes: numeric('remaining_estimate_minutes'), team_id: nullable('team_id') } }), 'Issue updated'); closeModal();
       if (state.route.name === 'board') renderBoard(state.route.projectKey); else if (state.route.name === 'backlog') renderBacklog(state.route.projectKey); else renderDashboard();
     } else if (form.matches('[data-comment-form]')) {
-      const author = state.bootstrap.users.find((user) => user.is_active);
-      await perform(() => tool('add_comment', { issue: formValue(form, 'issue'), body: formValue(form, 'body'), author_id: author?.id }), 'Comment added', false); const issueId = formValue(form, 'issue'); closeModal(); openIssue(issueId);
+      await perform(() => tool('add_comment', { issue: formValue(form, 'issue'), body: formValue(form, 'body'), author_id: state.currentUser?.id }), 'Comment added', false); const issueId = formValue(form, 'issue'); closeModal(); openIssue(issueId);
     } else if (form.id === 'record-form') {
       const values = JSON.parse(formValue(form, 'values'));
       const mode = event.submitter?.dataset.recordMode;
@@ -854,14 +871,37 @@ document.addEventListener('submit', async (event) => {
   }
 });
 
-window.addEventListener('popstate', renderRoute);
+window.addEventListener('popstate', () => state.currentUser ? renderRoute() : renderAuth());
 window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && modalRoot.innerHTML) closeModal();
   if (event.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { event.preventDefault(); openSearch(); }
 });
 
+function renderAuth(authState = {}) {
+  document.documentElement.dataset.theme = state.theme;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', state.theme === 'dark' ? '#2c333a' : '#f1f2f4');
+  document.body.classList.remove('modal-open', 'sidebar-open');
+  modalRoot.innerHTML = '';
+  const mode = location.pathname === '/register' ? 'register' : 'login';
+  const workspaceRequired = authState.registration?.workspace_required;
+  app.innerHTML = `<app-login mode="${mode}"${workspaceRequired ? ' workspace-required' : ''}></app-login>`;
+  app.querySelector('app-login').addEventListener('auth-success', async (event) => {
+    state.currentUser = event.detail.user;
+    if (state.currentUser?.organization_id) state.organizationId = state.currentUser.organization_id;
+    history.replaceState({}, '', '/');
+    await init();
+  }, { once: true });
+}
+
 async function init() {
   try {
+    const authState = await request('/api/auth');
+    state.currentUser = authState.user;
+    if (!state.currentUser) {
+      renderAuth(authState);
+      return;
+    }
+    if (location.pathname === '/login' || location.pathname === '/register') history.replaceState({}, '', '/');
     await refreshBootstrap();
     if (!state.bootstrap.organization) {
       app.innerHTML = `<div class="welcome-screen"><div class="brand-mark brand-mark--large" aria-hidden="true"><img src="/favicon.svg" alt=""></div><h1>Welcome to Agent Board</h1><p>Create a workspace to start planning and tracking work.</p><button class="button button--primary" data-setup-workspace>Create workspace</button></div>`;
