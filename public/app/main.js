@@ -1,4 +1,5 @@
 import './components/auth/login.js';
+import { chatPage, renderChatMessage, stepProgressGraphic } from './components/chat-page.js';
 
 const app = document.querySelector('#app');
 const modalRoot = document.querySelector('#modal-root');
@@ -16,6 +17,15 @@ const state = {
   dataEntity: 'organizations',
   dataRecords: [],
   currentUser: null,
+  chatSessions: [],
+  activeChat: null,
+  chatRunning: false,
+  chatImages: [],
+  chatController: null,
+  chatModel: '',
+  chatModels: [],
+  chatModelsLoaded: false,
+  chatFinalMessage: '',
   busy: false,
   theme: localStorage.getItem('agent-board.theme') || 'light'
 };
@@ -26,6 +36,7 @@ const ICONS = {
   board: '<rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="11" rx="1"/><rect x="17" y="4" width="4" height="8" rx="1"/>',
   backlog: '<path d="M5 6h14M5 12h14M5 18h14"/><circle cx="3" cy="6" r=".5"/><circle cx="3" cy="12" r=".5"/><circle cx="3" cy="18" r=".5"/>',
   robot: '<rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 7V4m-4 9h.01M16 13h.01M8 17h8"/>',
+  chat: '<path d="M4 5h16v12H9l-5 4V5Z"/><path d="M8 10h8M8 13h5"/>',
   database: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
@@ -229,6 +240,7 @@ function shell() {
           ${navItem('/', 'Your work', 'home', 'dashboard')}
           ${navItem('/projects', 'Projects', 'project', 'projects')}
           ${navItem('/agents', 'Agent activity', 'robot', 'agents')}
+          ${navItem('/chat', 'Chat', 'chat', 'chat')}
           ${navItem('/data', 'Data explorer', 'database', 'data')}
         </nav>
         <div class="sidebar__section">
@@ -243,7 +255,7 @@ function shell() {
         </div>
         <button class="sidebar__setup" type="button" data-setup-workspace>${icon('plus', 16)} Create workspace</button>
       </aside>
-      <main class="main" id="main-content"></main>
+      <main class="main${state.route.name === 'chat' ? ' main--chat' : ''}" id="main-content"></main>
       <div class="sidebar-scrim" data-toggle-sidebar></div>
     </div>`;
 }
@@ -702,6 +714,156 @@ async function openRecord(index, createMode = false) {
   });
 }
 
+async function renderChat() {
+  state.route = { name: 'chat' };
+  shell();
+  const main = document.querySelector('#main-content');
+  main.innerHTML = '<div class="page-loading"><span class="spinner"></span><p>Loading conversations…</p></div>';
+  try {
+    const data = await request('/api/chat/sessions');
+    state.chatSessions = data.sessions;
+    state.chatModel = data.model || '';
+    if (state.activeChat && !data.sessions.some(({ id }) => id === state.activeChat.id)) state.activeChat = null;
+    if (!state.activeChat && data.sessions.length) state.activeChat = (await request(`/api/chat/sessions/${data.sessions[0].id}`)).session;
+    paintChat();
+  } catch (error) { renderError(error); }
+}
+
+function paintChat() {
+  const main = document.querySelector('#main-content');
+  main.innerHTML = chatPage({ sessions: state.chatSessions, activeSession: state.activeChat, running: state.chatRunning, draftImages: state.chatImages, model: state.chatModel, models: state.chatModels });
+  bindChat();
+  scrollChat();
+}
+
+function bindChat() {
+  const form = document.querySelector('[data-chat-form]');
+  const textarea = form?.elements.message;
+  textarea?.addEventListener('input', () => {
+    textarea.style.height = 'auto';
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 140)}px`;
+    form.querySelector('.chat-send').disabled = !textarea.value.trim();
+  });
+  textarea?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); if (textarea.value.trim()) form.requestSubmit(); }
+  });
+  form?.addEventListener('submit', sendChatMessage);
+  document.querySelector('[data-chat-stop]')?.addEventListener('click', () => state.chatController?.abort());
+  document.querySelector('[data-chat-new]')?.addEventListener('click', async () => {
+    if (state.chatRunning) return;
+    const { session } = await request('/api/chat/sessions', { method: 'POST', body: '{}' });
+    state.chatSessions.unshift(session); state.activeChat = session; state.chatImages = []; paintChat();
+  });
+  document.querySelectorAll('[data-chat-session]').forEach((button) => button.addEventListener('click', async () => {
+    if (state.chatRunning) return;
+    state.activeChat = (await request(`/api/chat/sessions/${button.dataset.chatSession}`)).session; paintChat();
+  }));
+  document.querySelectorAll('[data-chat-delete]').forEach((button) => button.addEventListener('click', async () => {
+    if (state.chatRunning) return;
+    await request(`/api/chat/sessions/${button.dataset.chatDelete}`, { method: 'DELETE' });
+    state.chatSessions = state.chatSessions.filter(({ id }) => id !== button.dataset.chatDelete);
+    if (state.activeChat?.id === button.dataset.chatDelete) state.activeChat = null;
+    paintChat();
+  }));
+  const picker = document.querySelector('[data-chat-images]');
+  document.querySelector('[data-chat-attach]')?.addEventListener('click', () => picker.click());
+  picker?.addEventListener('change', async () => {
+    try { state.chatImages.push(...await Promise.all([...picker.files].slice(0, 4 - state.chatImages.length).map(imageFile))); paintChat(); }
+    catch (error) { toast(error.message, 'error'); }
+  });
+  document.querySelectorAll('[data-remove-image]').forEach((button) => button.addEventListener('click', () => { state.chatImages.splice(Number(button.dataset.removeImage), 1); paintChat(); }));
+  const modelPicker = document.querySelector('[data-chat-model-picker]');
+  if (!state.chatModelsLoaded) modelPicker?.querySelector('summary')?.addEventListener('click', async (event) => {
+    event.preventDefault();
+    const result = await request('/api/chat/models');
+    state.chatModel = result.currentModel; state.chatModels = result.models; state.chatModelsLoaded = true; paintChat();
+    document.querySelector('[data-chat-model-picker]').open = true;
+    if (result.warning) toast(result.warning, 'error');
+  });
+  document.querySelectorAll('[data-chat-model]').forEach((button) => button.addEventListener('click', async () => {
+    if (!button.dataset.chatModel || state.chatRunning) return;
+    const result = await request('/api/chat/model', { method: 'PATCH', body: JSON.stringify({ model: button.dataset.chatModel }) });
+    state.chatModel = result.model; paintChat();
+  }));
+}
+
+async function sendChatMessage(event) {
+  event.preventDefault();
+  if (state.chatRunning) return;
+  const prompt = event.currentTarget.elements.message.value.trim();
+  if (!prompt) return;
+  if (!state.activeChat) {
+    const result = await request('/api/chat/sessions', { method: 'POST', body: '{}' });
+    state.activeChat = result.session; state.chatSessions.unshift(result.session);
+  }
+  const session = state.activeChat;
+  const images = state.chatImages;
+  session.messages.push({ role: 'user', content: prompt, images: images.map(({ name, type }) => ({ name, type })) });
+  state.chatImages = []; state.chatRunning = true; state.chatController = new AbortController(); paintChat();
+  try {
+    const response = await fetch(`/api/chat/sessions/${session.id}/messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: prompt, images }), signal: state.chatController.signal });
+    if (!response.ok) { const failure = await response.json(); throw new Error(failure.error || 'Chat request failed'); }
+    await readChatStream(response);
+  } catch (error) { if (error.name !== 'AbortError') showChatError(error.message); }
+  finally {
+    state.chatRunning = false; state.chatController = null;
+    const [sessions, active] = await Promise.all([request('/api/chat/sessions'), request(`/api/chat/sessions/${session.id}`)]);
+    const lastMessage = active.session.messages.at(-1);
+    if (state.chatFinalMessage && (lastMessage?.role !== 'assistant' || lastMessage.content !== state.chatFinalMessage)) {
+      active.session.messages.push({ role: 'assistant', content: state.chatFinalMessage, images: [] });
+    }
+    state.chatSessions = sessions.sessions; state.activeChat = active.session; state.chatFinalMessage = ''; paintChat();
+  }
+}
+
+async function readChatStream(response) {
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n'); buffer = lines.pop() || '';
+    for (const line of lines) if (line.trim()) applyChatEvent(JSON.parse(line));
+  }
+  if (buffer.trim()) applyChatEvent(JSON.parse(buffer));
+}
+
+function applyChatEvent(event) {
+  const target = document.querySelector('[data-chat-live]');
+  if (!target) return;
+  if (event.type === 'delta') {
+    let message = target.querySelector('[data-chat-streaming]');
+    if (!message) { message = document.createElement('article'); message.className = 'chat-message assistant'; message.dataset.chatStreaming = ''; message.innerHTML = '<div class="chat-bubble"></div>'; target.append(message); }
+    message.querySelector('.chat-bubble').textContent += event.text; scrollChat();
+  } else if (event.type === 'done') {
+    state.chatFinalMessage = event.message;
+    const streaming = target.querySelector('[data-chat-streaming]');
+    if (streaming) streaming.outerHTML = renderChatMessage({ role: 'assistant', content: event.message });
+    scrollChat();
+  } else if (event.type === 'step') {
+    const run = document.querySelector('[data-live-run]'), list = run?.querySelector('ol');
+    if (!list) return;
+    let item = list.querySelector(`[data-step-id="${CSS.escape(event.step.id)}"]`);
+    if (!item) { item = document.createElement('li'); item.dataset.stepId = event.step.id; list.append(item); }
+    item.className = `chat-step ${event.step.status}`;
+    item.innerHTML = `<details><summary><span class="chat-step-marker"></span><span class="chat-step-copy"><strong></strong><small></small></span><time></time><span>›</span></summary></details>`;
+    item.querySelector('strong').textContent = event.step.label;
+    const steps = [...list.children].map((node) => ({ status: node.className.split(' ').at(-1) }));
+    run.querySelector('[data-step-progress]').outerHTML = stepProgressGraphic(steps, 'running');
+    run.querySelector('.chat-run-count').textContent = `${steps.length} step${steps.length === 1 ? '' : 's'}`;
+    scrollChat();
+  } else if (event.type === 'error') showChatError(event.error);
+}
+
+function showChatError(message) { const target = document.querySelector('[data-chat-live]'); if (target) target.insertAdjacentHTML('beforeend', `<div class="chat-error">${escapeHtml(message)}</div>`); scrollChat(); }
+function scrollChat() { requestAnimationFrame(() => { const scroll = document.querySelector('[data-chat-scroll]'); if (scroll) scroll.scrollTop = scroll.scrollHeight; }); }
+function imageFile(file) {
+  if (!file.type.startsWith('image/')) return Promise.reject(new Error('Only images can be attached'));
+  if (file.size > 6000000) return Promise.reject(new Error('Each image must be smaller than 6 MB'));
+  return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve({ name: file.name, type: file.type, dataUrl: reader.result }); reader.onerror = reject; reader.readAsDataURL(file); });
+}
+
 async function refreshBootstrap() {
   const suffix = state.organizationId ? `?organization_id=${encodeURIComponent(state.organizationId)}` : '';
   state.bootstrap = await request(`/api/bootstrap${suffix}`);
@@ -727,6 +889,7 @@ function renderRoute() {
   if (boardMatch) return renderBoard(decodeURIComponent(boardMatch[1]));
   if (backlogMatch) return renderBacklog(decodeURIComponent(backlogMatch[1]));
   if (path === '/agents') return renderAgents();
+  if (path === '/chat') return renderChat();
   if (path === '/data') return renderData(new URLSearchParams(location.search).get('entity') || state.dataEntity);
   state.route = { name: 'not-found' };
   shell();

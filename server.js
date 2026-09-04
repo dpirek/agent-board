@@ -6,12 +6,16 @@ const path = require('node:path');
 const { URL } = require('node:url');
 const { SqliteStore } = require('./lib/store');
 const { BoardService } = require('./lib/service');
-const { callTool, tools } = require('./lib/mcp');
+const { callTool, handleMessage, tools } = require('./lib/mcp');
+const { BoardChatAgent } = require('./lib/chat/agent');
+const { chatConfig, loadChatEnvironment } = require('./lib/chat/config');
+const { createChatRepository } = require('./lib/chat/repository');
 const { authApi } = require('./api/auth');
 const auth = require('./utils/auth');
 
 const PUBLIC_ROOT = path.resolve(__dirname, 'public');
 const DEFAULT_DATABASE = path.resolve(__dirname, 'db', 'agent-board.sqlite');
+loadChatEnvironment(path.resolve(__dirname, '.env'));
 const TOOL_NAMES = new Set(tools.map((tool) => tool.name));
 const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8', '.gif': 'image/gif', '.html': 'text/html; charset=utf-8',
@@ -58,6 +62,19 @@ function parseToolResult(toolResult) {
     throw Object.assign(new Error(message), { statusCode: 400 });
   }
   return toolResult?.structuredContent ?? null;
+}
+
+function validateChatImages(images) {
+  if (images === undefined) return [];
+  if (!Array.isArray(images) || images.length > 4) throw new Error('Attach no more than four images');
+  return images.map((image) => {
+    const name = String(image?.name || 'image').slice(0, 160);
+    const type = String(image?.type || 'image/png').slice(0, 80);
+    const dataUrl = String(image?.dataUrl || '');
+    if (!dataUrl.startsWith('data:image/') || !dataUrl.includes(';base64,')) throw new Error('Invalid image attachment');
+    if (dataUrl.length > 8_000_000) throw new Error('Each image must be smaller than 6 MB');
+    return { name, type, dataUrl };
+  });
 }
 
 function scalar(store, sql, ...parameters) {
@@ -186,6 +203,11 @@ function createWebServer(options = {}) {
   const databaseFile = options.databaseFile || process.env.AGENT_BOARD_DB || DEFAULT_DATABASE;
   const store = options.store || new SqliteStore(databaseFile);
   const service = options.service || new BoardService(store);
+  const chatRepository = options.chatRepository || createChatRepository(store.database);
+  const chatAgent = options.chatAgent || new BoardChatAgent({
+    config: chatConfig(),
+    mcp: { handle: (message) => handleMessage(service, message) }
+  });
   const server = http.createServer(async (request, response) => {
     const origin = `http://${request.headers.host || '127.0.0.1'}`;
     let requestUrl;
@@ -218,6 +240,75 @@ function createWebServer(options = {}) {
           ...bootstrap(service, store, requestUrl.searchParams.get('organization_id')),
           current_user: authUser
         });
+      }
+      if (pathname === '/api/chat/sessions' && request.method === 'GET') {
+        return sendJson(response, 200, {
+          sessions: chatRepository.list(authUser.id),
+          model: chatRepository.getModel(authUser.id) || chatAgent.config.model
+        });
+      }
+      if (pathname === '/api/chat/sessions' && request.method === 'POST') {
+        return sendJson(response, 201, { session: chatRepository.create(authUser.id) });
+      }
+      if (pathname === '/api/chat/models' && request.method === 'GET') {
+        const currentModel = chatRepository.getModel(authUser.id) || chatAgent.config.model;
+        let models = [];
+        let warning;
+        try { models = await chatAgent.listModels(); } catch (error) { warning = error.message; }
+        return sendJson(response, 200, {
+          currentModel,
+          models: [...new Set([currentModel, chatAgent.config.model, ...models].filter(Boolean))],
+          ...(warning ? { warning } : {})
+        });
+      }
+      if (pathname === '/api/chat/model' && request.method === 'PATCH') {
+        return sendJson(response, 200, { model: chatRepository.setModel(authUser.id, (await readJson(request)).model) });
+      }
+      const chatSession = pathname.match(/^\/api\/chat\/sessions\/([0-9a-f-]+)$/i);
+      if (chatSession && request.method === 'GET') {
+        const session = chatRepository.get(authUser.id, chatSession[1]);
+        return session ? sendJson(response, 200, { session }) : sendJson(response, 404, { error: 'Conversation not found' });
+      }
+      if (chatSession && request.method === 'DELETE') {
+        return chatRepository.remove(authUser.id, chatSession[1])
+          ? sendJson(response, 200, { ok: true })
+          : sendJson(response, 404, { error: 'Conversation not found' });
+      }
+      const chatMessage = pathname.match(/^\/api\/chat\/sessions\/([0-9a-f-]+)\/messages$/i);
+      if (chatMessage && request.method === 'POST') {
+        const input = await readJson(request, 32 * 1024 * 1024);
+        const prompt = String(input.message || '').trim();
+        if (!prompt || prompt.length > 40000) return sendJson(response, 400, { error: 'A message is required' });
+        const images = validateChatImages(input.images);
+        const sessionId = chatMessage[1];
+        const userMessageId = chatRepository.addMessage(authUser.id, sessionId, 'user', prompt, images);
+        const session = chatRepository.get(authUser.id, sessionId);
+        const runId = chatRepository.createRun(authUser.id, sessionId, userMessageId);
+        const controller = new AbortController();
+        const observedSteps = new Map();
+        response.on('close', () => { if (!response.writableEnded) controller.abort(); });
+        response.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive' });
+        const emit = (event) => {
+          if (event.type === 'step' && event.step?.id) observedSteps.set(event.step.id, event.step);
+          if (!response.destroyed) response.write(`${JSON.stringify(event)}\n`);
+        };
+        emit({ type: 'run', runId, session: chatRepository.get(authUser.id, sessionId) });
+        try {
+          const result = await chatAgent.run({ messages: session.messages, images, model: chatRepository.getModel(authUser.id) || chatAgent.config.model, signal: controller.signal, emit });
+          const assistantMessageId = chatRepository.addMessage(authUser.id, sessionId, 'assistant', result.text);
+          chatRepository.finishRun(authUser.id, runId, { status: 'completed', steps: result.steps, usage: result.usage, assistantMessageId });
+          emit({ type: 'done', message: result.text, usage: result.usage, steps: result.steps });
+        } catch (error) {
+          const cancelled = controller.signal.aborted;
+          const errorMessage = cancelled ? 'Run stopped' : error.message;
+          const steps = [...observedSteps.values()];
+          const active = [...steps].reverse().find((step) => step.status === 'running');
+          if (active) Object.assign(active, { status: cancelled ? 'cancelled' : 'failed', error: cancelled ? undefined : errorMessage, durationMs: active.startedAt ? Date.now() - active.startedAt : 0, details: [...(active.details || []), { title: cancelled ? 'Status' : 'Error', text: errorMessage }] });
+          else steps.push({ id: `run-${runId}`, label: 'Chat run', status: cancelled ? 'cancelled' : 'failed', error: errorMessage, details: [{ title: cancelled ? 'Status' : 'Error', text: errorMessage }] });
+          chatRepository.finishRun(authUser.id, runId, { status: cancelled ? 'cancelled' : 'failed', steps, error: errorMessage });
+          emit({ type: cancelled ? 'cancelled' : 'error', error: errorMessage });
+        }
+        return response.end();
       }
       if (pathname === '/api/tools' && request.method === 'GET') return sendJson(response, 200, { tools });
       const toolMatch = pathname.match(/^\/api\/tools\/([a-z_]+)$/);

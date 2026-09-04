@@ -490,6 +490,67 @@ CREATE INDEX idx_auth_sessions_user_id ON _auth_sessions(user_id);
 CREATE INDEX idx_auth_sessions_expires_at ON _auth_sessions(expires_at);
 
 -- =========================================================
+-- INTERNAL BOARD CHAT (not exposed through MCP/schema tools)
+-- =========================================================
+
+CREATE TABLE _chat_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT 'New chat',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE _chat_preferences (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE _chat_messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id UUID NOT NULL REFERENCES _chat_sessions(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    images_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE _chat_runs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id UUID NOT NULL REFERENCES _chat_sessions(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_message_id UUID REFERENCES _chat_messages(id) ON DELETE SET NULL,
+    assistant_message_id UUID REFERENCES _chat_messages(id) ON DELETE SET NULL,
+    status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'cancelled')),
+    step_summary_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_chat_sessions_user ON _chat_sessions(user_id, updated_at);
+CREATE INDEX idx_chat_messages_session ON _chat_messages(session_id, id);
+CREATE INDEX idx_chat_runs_session ON _chat_runs(session_id, created_at);
+
+CREATE TRIGGER IF NOT EXISTS chat_message_owner_guard
+    BEFORE INSERT ON _chat_messages
+    WHEN NOT EXISTS (SELECT 1 FROM _chat_sessions WHERE id = NEW.session_id AND user_id = NEW.user_id)
+BEGIN
+    SELECT RAISE(ABORT, 'chat message user must own session');
+END;
+
+CREATE TRIGGER IF NOT EXISTS chat_run_owner_guard
+    BEFORE INSERT ON _chat_runs
+    WHEN NOT EXISTS (SELECT 1 FROM _chat_sessions WHERE id = NEW.session_id AND user_id = NEW.user_id)
+BEGIN
+    SELECT RAISE(ABORT, 'chat run user must own session');
+END;
+
+-- =========================================================
 -- HELPER FUNCTION: UPDATED_AT
 -- =========================================================
 
