@@ -37,8 +37,15 @@ test('board chat agent invokes the connected MCP registry and streams its answer
   const requests = [], calls = [], events = [];
   const agent = new BoardChatAgent({
     config: { model: 'default', apiKey: 'key', baseUrl: 'https://example.test/v1', systemPrompt: 'Board prompt', maxToolTurns: 3 },
-    mcp: { handle: async (message) => {
-      if (message.method === 'tools/list') return { tools: [{ name: 'search_issues', description: 'Search', inputSchema: { type: 'object' } }] };
+    mcp: { handle: async (message, context) => {
+      if (message.method === 'tools/list') return { tools: [
+        { name: 'get_current_ui_context', description: 'Get UI context', inputSchema: { type: 'object' } },
+        { name: 'search_issues', description: 'Search', inputSchema: { type: 'object' } }
+      ] };
+      if (message.params.name === 'get_current_ui_context') {
+        calls.push(message.params);
+        return { structuredContent: context.uiContext, content: [{ type: 'text', text: JSON.stringify(context.uiContext) }] };
+      }
       calls.push(message.params); return { content: [{ type: 'text', text: '[]' }] };
     } },
     fetchImpl: async (_url, options) => {
@@ -47,10 +54,16 @@ test('board chat agent invokes the connected MCP registry and streams its answer
       return eventStream([{ type: 'response.output_text.delta', delta: 'No urgent issues.' }, { type: 'response.completed', response: { output_text: 'No urgent issues.', output: [], usage: { input_tokens: 3, output_tokens: 4 } } }]);
     }
   });
-  const result = await agent.run({ messages: [{ role: 'user', content: 'Find urgent issues' }], emit: (event) => events.push(event) });
+  const uiContext = { user: { id: 'user-1', name: 'Ada' }, workspace: { id: 'workspace-1', name: 'Acme' }, screen: { route: 'chat' } };
+  const result = await agent.run({ messages: [{ role: 'user', content: 'Find urgent issues' }], mcpContext: { uiContext }, emit: (event) => events.push(event) });
   assert.equal(result.text, 'No urgent issues.');
-  assert.deepEqual(calls, [{ name: 'search_issues', arguments: { text: 'urgent' } }]);
+  assert.deepEqual(calls, [
+    { name: 'get_current_ui_context', arguments: {} },
+    { name: 'search_issues', arguments: { text: 'urgent' } }
+  ]);
   assert.equal(requests[0].instructions, 'Board prompt');
+  assert.ok(requests[0].input.some((item) => item.type === 'function_call_output' && item.output.includes('workspace-1')));
+  assert.equal(result.steps[0].label, 'board.get_current_ui_context');
   assert.equal(result.steps.find((step) => step.id === 'call-1').label, 'board.search_issues');
   assert.ok(events.some((event) => event.type === 'delta'));
 });
@@ -59,6 +72,7 @@ test('default system prompt is tailored to board operations and verified MCP mut
   const config = chatConfig({});
   assert.match(config.systemPrompt, /Board Agent/);
   assert.match(config.systemPrompt, /projects, boards, backlogs, sprints, issues/);
+  assert.match(config.systemPrompt, /get_current_ui_context/);
   assert.match(config.systemPrompt, /never claim an operation succeeded unless its tool result confirms it/i);
 });
 

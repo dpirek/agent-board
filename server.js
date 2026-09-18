@@ -77,6 +77,33 @@ function validateChatImages(images) {
   });
 }
 
+function chatUiContext(input, authUser, service) {
+  const requestedWorkspaceId = String(input?.workspaceId || authUser.organization_id || '').slice(0, 80);
+  let workspace = null;
+  try { workspace = requestedWorkspaceId ? service.get('organizations', requestedWorkspaceId) : null; } catch { /* Invalid or stale UI selection. */ }
+  const screen = (value) => {
+    if (!value || typeof value !== 'object') return null;
+    return {
+      path: String(value.path || '/chat').slice(0, 500),
+      route: String(value.route || 'chat').slice(0, 80),
+      ...(value.projectKey ? { projectKey: String(value.projectKey).slice(0, 40) } : {}),
+      ...(value.issueKey ? { issueKey: String(value.issueKey).slice(0, 80) } : {})
+    };
+  };
+  return {
+    available: true,
+    user: {
+      id: authUser.id,
+      name: authUser.name,
+      email: authUser.email,
+      role: authUser.role
+    },
+    workspace: workspace ? { id: workspace.id, name: workspace.name } : null,
+    screen: screen(input?.screen),
+    sourceScreen: screen(input?.sourceScreen)
+  };
+}
+
 function scalar(store, sql, ...parameters) {
   return Number(store.database.prepare(sql).get(...parameters).value || 0);
 }
@@ -206,7 +233,7 @@ function createWebServer(options = {}) {
   const chatRepository = options.chatRepository || createChatRepository(store.database);
   const chatAgent = options.chatAgent || new BoardChatAgent({
     config: chatConfig(),
-    mcp: { handle: (message) => handleMessage(service, message) }
+    mcp: { handle: (message, context) => handleMessage(service, message, context) }
   });
   const server = http.createServer(async (request, response) => {
     const origin = `http://${request.headers.host || '127.0.0.1'}`;
@@ -294,7 +321,14 @@ function createWebServer(options = {}) {
         };
         emit({ type: 'run', runId, session: chatRepository.get(authUser.id, sessionId) });
         try {
-          const result = await chatAgent.run({ messages: session.messages, images, model: chatRepository.getModel(authUser.id) || chatAgent.config.model, signal: controller.signal, emit });
+          const result = await chatAgent.run({
+            messages: session.messages,
+            images,
+            model: chatRepository.getModel(authUser.id) || chatAgent.config.model,
+            signal: controller.signal,
+            emit,
+            mcpContext: { uiContext: chatUiContext(input.uiContext, authUser, service) }
+          });
           const assistantMessageId = chatRepository.addMessage(authUser.id, sessionId, 'assistant', result.text);
           chatRepository.finishRun(authUser.id, runId, { status: 'completed', steps: result.steps, usage: result.usage, assistantMessageId });
           emit({ type: 'done', message: result.text, usage: result.usage, steps: result.steps });

@@ -26,6 +26,13 @@ test('handles MCP initialization and tool calls', async (t) => {
   const listed = await handleMessage(service, { jsonrpc: '2.0', id: 2, method: 'tools/list' });
   assert.ok(listed.tools.some((tool) => tool.name === 'create_record'));
   assert.ok(listed.tools.some((tool) => tool.name === 'create_issue'));
+  assert.ok(listed.tools.some((tool) => tool.name === 'get_current_ui_context'));
+
+  const uiContext = await handleMessage(service, {
+    jsonrpc: '2.0', id: 20, method: 'tools/call',
+    params: { name: 'get_current_ui_context', arguments: {} }
+  }, { uiContext: { user: { id: 'user-1' }, workspace: { id: 'workspace-1' }, screen: { route: 'chat' } } });
+  assert.equal(uiContext.structuredContent.workspace.id, 'workspace-1');
 
   const created = await handleMessage(service, {
     jsonrpc: '2.0', id: 3, method: 'tools/call',

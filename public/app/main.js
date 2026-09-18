@@ -26,6 +26,7 @@ const state = {
   chatModels: [],
   chatModelsLoaded: false,
   chatFinalMessage: '',
+  chatSourceScreen: null,
   busy: false,
   theme: localStorage.getItem('agent-board.theme') || 'light'
 };
@@ -801,7 +802,12 @@ async function sendChatMessage(event) {
   session.messages.push({ role: 'user', content: prompt, images: images.map(({ name, type }) => ({ name, type })) });
   state.chatImages = []; state.chatRunning = true; state.chatController = new AbortController(); paintChat();
   try {
-    const response = await fetch(`/api/chat/sessions/${session.id}/messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: prompt, images }), signal: state.chatController.signal });
+    const response = await fetch(`/api/chat/sessions/${session.id}/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: prompt, images, uiContext: currentChatUiContext() }),
+      signal: state.chatController.signal
+    });
     if (!response.ok) { const failure = await response.json(); throw new Error(failure.error || 'Chat request failed'); }
     await readChatStream(response);
   } catch (error) { if (error.name !== 'AbortError') showChatError(error.message); }
@@ -864,6 +870,14 @@ function imageFile(file) {
   return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve({ name: file.name, type: file.type, dataUrl: reader.result }); reader.onerror = reject; reader.readAsDataURL(file); });
 }
 
+function currentChatUiContext() {
+  return {
+    workspaceId: state.organizationId,
+    screen: { path: location.pathname + location.search, route: state.route.name },
+    sourceScreen: state.chatSourceScreen
+  };
+}
+
 async function refreshBootstrap() {
   const suffix = state.organizationId ? `?organization_id=${encodeURIComponent(state.organizationId)}` : '';
   state.bootstrap = await request(`/api/bootstrap${suffix}`);
@@ -875,6 +889,14 @@ async function refreshBootstrap() {
 
 function navigate(pathname, replace = false) {
   const url = new URL(pathname, location.origin);
+  if (url.pathname === '/chat' && state.route.name !== 'chat') {
+    state.chatSourceScreen = {
+      path: location.pathname + location.search,
+      route: state.route.name,
+      ...(state.route.projectKey ? { projectKey: state.route.projectKey } : {}),
+      ...(state.selectedIssue?.issue_key ? { issueKey: state.selectedIssue.issue_key } : {})
+    };
+  }
   if (replace) history.replaceState({}, '', url.pathname + url.search);
   else history.pushState({}, '', url.pathname + url.search);
   renderRoute();

@@ -49,7 +49,7 @@ test('web UI serves SPA routes and exposes every MCP operation over JSON', async
   assert.equal(registrationResponse.status, 201);
   cookie = registrationResponse.headers.get('set-cookie').split(';')[0];
   const availableTools = await get('/api/tools');
-  assert.equal(availableTools.tools.length, 19);
+  assert.equal(availableTools.tools.length, 20);
 
   const workspace = await tool('setup_workspace', {
     organization_name: 'Web Test', admin_name: 'Admin', admin_email: 'admin@web.test'
